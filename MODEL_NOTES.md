@@ -26,6 +26,9 @@ Projection tab in `euroleague_props.py`.
 - Expected pace blends the recent pace of both teams.
 - Player shot-zone mix and points per attempt, shrunk toward league zone rates
   using a 30-attempt prior.
+- Shot zones are taken directly from the existing `zone()` function in
+  `euroleague_props.py`; the projection module consumes its `Zone` column and
+  does not classify coordinates or create another zone dataset.
 - Opponent shot-zone attempt volume and field-goal accuracy, shrunk over games
   and capped to keep small samples from dominating.
 - Opponent defensive rating and position-based points, rebounds and assists
