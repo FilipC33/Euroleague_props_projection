@@ -228,3 +228,67 @@ def opponent_zone_defense(shots: pd.DataFrame) -> pd.DataFrame:
     result["FG_pct_vs_league"] = result["FG_pct_allowed"] - result["League_FG_pct"]
     result["PTS_vs_league"] = result["PTS_allowed_per_game"] - result["League_PTS_per_game"]
     return result.sort_values(["DefTeam", "Zone"]).reset_index(drop=True)
+
+
+
+def position_defense_table(
+    box: pd.DataFrame,
+    position_map: dict[str, str],
+    stats: list[str] | None = None,
+) -> pd.DataFrame:
+    """Calculate opponent production allowed per 40 position-minutes.
+
+    Position labels should come from the app's saved position map. Unknown
+    players default to Wing, matching the current app's conservative fallback.
+    Per-40 rates make teams comparable even when their position groups receive
+    different amounts of court time.
+    """
+    stats = stats or ["PTS", "REB", "AST", "3PM"]
+    _require_columns(box, ["Gamecode", "Team", "Player_ID", "MIN"] + stats)
+    data = box.copy()
+    data["MIN"] = pd.to_numeric(data["MIN"], errors="coerce").fillna(0)
+    data = data.loc[data["MIN"] > 0].copy()
+    if data.empty:
+        return pd.DataFrame()
+
+    if "Opp" not in data.columns:
+        game_teams = data[["Gamecode", "Team"]].drop_duplicates()
+        opponent_map = {}
+        for gamecode, group in game_teams.groupby("Gamecode"):
+            teams = group["Team"].dropna().unique().tolist()
+            if len(teams) == 2:
+                opponent_map[(gamecode, teams[0])] = teams[1]
+                opponent_map[(gamecode, teams[1])] = teams[0]
+        data["Opp"] = [
+            opponent_map.get((gamecode, team))
+            for gamecode, team in zip(data["Gamecode"], data["Team"])
+        ]
+
+    data = data.dropna(subset=["Opp"])
+    data["Position"] = data["Player_ID"].astype(str).map(position_map).fillna("Wing")
+    data.loc[~data["Position"].isin(["Guard", "Wing", "Big"]), "Position"] = "Wing"
+    for stat in stats:
+        data[stat] = pd.to_numeric(data[stat], errors="coerce").fillna(0)
+
+    allowed = data.groupby(["Opp", "Position"], as_index=False).agg(
+        Games=("Gamecode", "nunique"),
+        Position_MIN=("MIN", "sum"),
+        **{stat: (stat, "sum") for stat in stats},
+    )
+    league = data.groupby("Position").agg(
+        League_MIN=("MIN", "sum"),
+        **{f"{stat}_league_total": (stat, "sum") for stat in stats},
+    ).reset_index()
+
+    result = allowed.merge(league, on="Position", how="left")
+    for stat in stats:
+        result[f"{stat}_allowed_per40"] = (
+            result[stat] * REGULATION_MINUTES / result["Position_MIN"]
+        )
+        result[f"{stat}_league_per40"] = (
+            result[f"{stat}_league_total"] * REGULATION_MINUTES / result["League_MIN"]
+        )
+        result[f"{stat}_vs_league"] = (
+            result[f"{stat}_allowed_per40"] - result[f"{stat}_league_per40"]
+        )
+    return result.sort_values(["Opp", "Position"]).reset_index(drop=True)
