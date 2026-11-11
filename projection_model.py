@@ -388,3 +388,80 @@ def expected_minutes_table(
     result.loc[allocation.index, "Projected_MIN"] = allocation
     result.index.name = "Player_ID"
     return result.reset_index().sort_values("Projected_MIN", ascending=False).reset_index(drop=True)
+
+
+
+def game_environment(
+    team_games: pd.DataFrame,
+    team: str,
+    opponent: str,
+    recent_games: int = 5,
+    max_adjustment: float = 0.05,
+) -> dict[str, float]:
+    """Estimate a conservative pace and scoring environment from prior games.
+
+    Call this with historical rows only (games before the game being projected)
+    when backtesting. Both teams' recent pace is blended; opponent DRtg adjusts
+    scoring modestly and is not applied automatically to non-scoring stats.
+    """
+    _require_columns(team_games, ["Gamecode", "Team", "Pace_per40", "DRtg"])
+    if recent_games < 1 or not 0 <= max_adjustment < 1:
+        raise ValueError("Invalid recent_games or max_adjustment")
+
+    league_pace = float(team_games["Pace_per40"].mean())
+    league_drtg = float(team_games["DRtg"].mean())
+    if league_pace <= 0 or league_drtg <= 0:
+        return {
+            "expected_pace": league_pace,
+            "pace_factor": 1.0,
+            "opponent_drtg": league_drtg,
+            "scoring_factor": 1.0,
+        }
+
+    def recent_mean(team_name: str, column: str, fallback: float) -> float:
+        subset = team_games.loc[team_games["Team"] == team_name].sort_values("Gamecode")
+        values = subset[column].dropna().tail(recent_games)
+        return float(values.mean()) if not values.empty else fallback
+
+    team_pace = recent_mean(team, "Pace_per40", league_pace)
+    opponent_pace = recent_mean(opponent, "Pace_per40", league_pace)
+    opponent_drtg = recent_mean(opponent, "DRtg", league_drtg)
+    expected_pace = (team_pace + opponent_pace) / 2.0
+    pace_factor = expected_pace / league_pace
+    scoring_factor = opponent_drtg / league_drtg
+
+    return {
+        "expected_pace": expected_pace,
+        "pace_factor": float(max(1 - max_adjustment, min(1 + max_adjustment, pace_factor))),
+        "opponent_drtg": opponent_drtg,
+        "scoring_factor": float(max(1 - max_adjustment, min(1 + max_adjustment, scoring_factor))),
+    }
+
+
+def project_player_box_score(
+    rates: pd.DataFrame,
+    minutes: pd.DataFrame,
+    pace_factor: float = 1.0,
+    scoring_factor: float = 1.0,
+    stats: list[str] | None = None,
+) -> pd.DataFrame:
+    """Convert shrunk per-40 rates and projected minutes into box-score means.
+
+    Pace scales counting-stat volume. The optional opponent scoring factor is
+    applied to points only; zone-based shot efficiency and prop-specific
+    adjustments can be layered on later without double-counting defense.
+    """
+    stats = stats or ["PTS", "REB", "AST", "3PM", "STL", "BLK", "TO"]
+    _require_columns(rates, ["Player_ID"] + [f"{stat}_per40_shrunk" for stat in stats])
+    _require_columns(minutes, ["Player_ID", "Projected_MIN"])
+    result = minutes.merge(rates, on="Player_ID", how="left")
+    result["Projected_MIN"] = pd.to_numeric(
+        result["Projected_MIN"], errors="coerce"
+    ).fillna(0)
+    for stat in stats:
+        rate = pd.to_numeric(result[f"{stat}_per40_shrunk"], errors="coerce").fillna(0)
+        projection = rate * result["Projected_MIN"] / REGULATION_MINUTES * pace_factor
+        if stat == "PTS":
+            projection = projection * scoring_factor
+        result[f"Proj_{stat}"] = projection
+    return result
