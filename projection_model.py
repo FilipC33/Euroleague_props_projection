@@ -682,3 +682,39 @@ def zone_points_projection(
         "Projected_PTS": fg_points + ft_points,
         "zones": zone_result,
     }
+
+
+
+def position_adjustment_factors(
+    position_defense: pd.DataFrame,
+    opponent: str,
+    position: str,
+    stats: list[str] | None = None,
+    max_adjustment: float = 0.05,
+    prior_games: float = 5.0,
+) -> dict[str, float]:
+    """Return small, sample-shrunk multipliers for a player's position matchup."""
+    stats = stats or ["PTS", "REB", "AST"]
+    if position_defense.empty:
+        return {stat: 1.0 for stat in stats}
+    row = position_defense.loc[
+        (position_defense["Opp"].astype(str) == str(opponent))
+        & (position_defense["Position"] == position)
+    ]
+    if row.empty:
+        return {stat: 1.0 for stat in stats}
+
+    sample = row.iloc[0]
+    games = float(sample["Games"])
+    reliability = games / (games + prior_games) if games + prior_games > 0 else 0.0
+    factors = {}
+    for stat in stats:
+        allowed = sample.get(f"{stat}_allowed_per40")
+        league = sample.get(f"{stat}_league_per40")
+        if pd.isna(allowed) or pd.isna(league) or float(league) <= 0:
+            factors[stat] = 1.0
+            continue
+        raw_ratio = float(allowed) / float(league)
+        shrunk_ratio = 1.0 + reliability * (raw_ratio - 1.0)
+        factors[stat] = float(max(1 - max_adjustment, min(1 + max_adjustment, shrunk_ratio)))
+    return factors
