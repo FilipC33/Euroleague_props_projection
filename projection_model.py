@@ -124,27 +124,18 @@ def league_context(team_games: pd.DataFrame) -> dict[str, float]:
 ZONES = ["Rim", "Paint", "Midrange", "Corner 3", "Above-the-break 3"]
 
 
-def add_shot_zones(shots: pd.DataFrame) -> pd.DataFrame:
-    """Apply the same court-zone boundaries used by the existing app."""
-    _require_columns(shots, ["COORD_X", "COORD_Y", "Result", "POINTS"])
+def _prepare_zoned_shots(shots: pd.DataFrame) -> pd.DataFrame:
+    """Prepare shots already classified by the app's existing zone() function.
+
+    This module deliberately does not classify coordinates or create a second
+    zone dataset. Pass the existing app output with its Zone column.
+    """
+    _require_columns(shots, ["Zone", "Result", "POINTS"])
     data = shots.copy()
-    data["COORD_X"] = pd.to_numeric(data["COORD_X"], errors="coerce")
-    data["COORD_Y"] = pd.to_numeric(data["COORD_Y"], errors="coerce")
-    data = data.dropna(subset=["COORD_X", "COORD_Y"])
-    data = data[(data["COORD_X"] != -1) & (data["COORD_Y"] != -1)].copy()
-
-    x, y = data["COORD_X"], data["COORD_Y"]
-    distance = (x ** 2 + y ** 2) ** 0.5
-    rim = distance <= 100
-    paint = (x.abs() <= 245) & (y <= 430) & ~rim
-    corner = (x.abs() >= 660) & (y <= 142)
-    above_break = (distance >= 675) & ~corner
-
-    data["Zone"] = "Midrange"
-    data.loc[rim, "Zone"] = "Rim"
-    data.loc[paint, "Zone"] = "Paint"
-    data.loc[corner, "Zone"] = "Corner 3"
-    data.loc[above_break, "Zone"] = "Above-the-break 3"
+    invalid = sorted(set(data["Zone"].dropna().unique()) - set(ZONES))
+    if invalid:
+        raise ValueError(f"Unknown shot zones in existing shot data: {invalid}")
+    data = data.dropna(subset=["Zone"]).copy()
     data["FGM"] = data["Result"].eq("Made").astype(int)
     data["POINTS"] = pd.to_numeric(data["POINTS"], errors="coerce").fillna(0)
     return data
@@ -152,8 +143,8 @@ def add_shot_zones(shots: pd.DataFrame) -> pd.DataFrame:
 
 def player_zone_table(shots: pd.DataFrame) -> pd.DataFrame:
     """Player shooting profile by zone: volume share, accuracy and points/shot."""
-    _require_columns(shots, ["ID_PLAYER", "COORD_X", "COORD_Y", "Result", "POINTS"])
-    data = add_shot_zones(shots)
+    _require_columns(shots, ["ID_PLAYER", "Zone", "Result", "POINTS"])
+    data = _prepare_zoned_shots(shots)
     if data.empty:
         return pd.DataFrame(columns=[
             "ID_PLAYER", "Zone", "FGA", "FGM", "PTS", "FGA_share", "FG_pct", "PPP"
@@ -175,8 +166,8 @@ def opponent_zone_defense(shots: pd.DataFrame) -> pd.DataFrame:
     Each defensive team-game is retained for every zone, including zones where
     it allowed zero attempts. League FG% is weighted by attempts.
     """
-    _require_columns(shots, ["Gamecode", "TEAM", "COORD_X", "COORD_Y", "Result", "POINTS"])
-    data = add_shot_zones(shots)
+    _require_columns(shots, ["Gamecode", "TEAM", "Zone", "Result", "POINTS"])
+    data = _prepare_zoned_shots(shots)
     if data.empty:
         return pd.DataFrame()
 
@@ -594,9 +585,9 @@ def zone_points_projection(
     if projected_fga < 0 or projected_ftm < 0 or prior_attempts < 0:
         raise ValueError("Attempts, free throws and prior must be non-negative")
     _require_columns(
-        shots, ["ID_PLAYER", "TEAM", "Gamecode", "COORD_X", "COORD_Y", "Result", "POINTS"]
+        shots, ["ID_PLAYER", "TEAM", "Gamecode", "Zone", "Result", "POINTS"]
     )
-    data = add_shot_zones(shots)
+    data = _prepare_zoned_shots(shots)
     if data.empty:
         return {
             "Projected_FG_PTS": 0.0,
@@ -628,7 +619,7 @@ def zone_points_projection(
     ).reindex(ZONES).fillna(0)
     player_attempts = float(player_zone["FGA"].sum())
 
-    defense = opponent_zone_defense(shots)
+    defense = opponent_zone_defense(data)
     if not defense.empty and opponent_code is not None:
         defense = defense.loc[defense["DefTeam"].astype(str) == str(opponent_code)].set_index("Zone")
     else:
