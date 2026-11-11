@@ -679,7 +679,7 @@ with tab5:
             m2.metric("Points", f"{projected_points:.1f}")
             m3.metric("Rebounds", f"{projected_rebounds:.1f}")
             m4.metric("Assists", f"{projected_assists:.1f}")
-            m5.metric("3-pointers", f"{player_projection['Proj_3PM']:.1f}")
+            m5.metric("3-pointers", f"{zone_projection.get('Projected_3PM', player_projection['Proj_3PM']):.1f}")
 
             st.caption(
                 f"Estimated pace: {environment['expected_pace']:.1f} possessions per 40 · "
