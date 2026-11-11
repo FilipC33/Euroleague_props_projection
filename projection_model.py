@@ -292,3 +292,99 @@ def position_defense_table(
             result[f"{stat}_allowed_per40"] - result[f"{stat}_league_per40"]
         )
     return result.sort_values(["Opp", "Position"]).reset_index(drop=True)
+
+
+
+def _cap_and_scale_minutes(
+    weights: pd.Series,
+    total_minutes: float = 200.0,
+    player_cap: float = 40.0,
+) -> pd.Series:
+    """Scale rotation weights to a team-minute total without exceeding 40."""
+    if weights.empty:
+        return weights.astype(float)
+    if total_minutes < 0 or player_cap <= 0:
+        raise ValueError("Minute totals must be non-negative and player_cap positive")
+    weights = pd.to_numeric(weights, errors="coerce").fillna(0).clip(lower=0)
+    if weights.sum() <= 0:
+        weights[:] = 1.0
+
+    allocation = pd.Series(0.0, index=weights.index)
+    remaining = min(float(total_minutes), player_cap * len(weights))
+    active = weights.index.tolist()
+    while active and remaining > 1e-9:
+        active_weights = weights.loc[active]
+        if active_weights.sum() <= 0:
+            active_weights = pd.Series(1.0, index=active)
+        proposed = active_weights / active_weights.sum() * remaining
+        capped = proposed[proposed >= player_cap - 1e-9]
+        if capped.empty:
+            allocation.loc[active] += proposed
+            break
+        for player_id in capped.index:
+            allocation.loc[player_id] += player_cap
+            remaining -= player_cap
+            active.remove(player_id)
+    return allocation
+
+
+def expected_minutes_table(
+    box: pd.DataFrame,
+    team: str,
+    unavailable_player_ids: set[str] | None = None,
+    recent_games: int = 5,
+    recent_weight: float = 0.65,
+    team_minutes: float = 200.0,
+) -> pd.DataFrame:
+    """Estimate the next game's player minutes and redistribute absences.
+
+    Recent and season-to-date team-game averages form each player's baseline.
+    Players listed as unavailable receive zero; their rotation share is
+    redistributed proportionally among the remaining roster, with a 40-minute
+    regulation cap per player. Pass player IDs as strings.
+    """
+    _require_columns(box, ["Gamecode", "Team", "Player_ID", "Player", "MIN"])
+    if recent_games < 1:
+        raise ValueError("recent_games must be at least 1")
+    if not 0 <= recent_weight <= 1:
+        raise ValueError("recent_weight must be between 0 and 1")
+
+    data = box.loc[box["Team"] == team].copy()
+    if data.empty:
+        return pd.DataFrame(columns=[
+            "Player_ID", "Player", "Recent_MIN", "Season_MIN",
+            "Baseline_MIN", "Projected_MIN", "Unavailable",
+        ])
+    data["Player_ID"] = data["Player_ID"].astype(str)
+    data["MIN"] = pd.to_numeric(data["MIN"], errors="coerce").fillna(0).clip(lower=0)
+    games = sorted(data["Gamecode"].dropna().unique())[-recent_games:]
+    roster = (
+        data.sort_values("Gamecode").groupby("Player_ID", as_index=False)
+        .agg(Player=("Player", "last"))
+    )
+    pivot = data.pivot_table(
+        index="Gamecode", columns="Player_ID", values="MIN", aggfunc="sum", fill_value=0
+    ).reindex(index=games, columns=roster["Player_ID"], fill_value=0)
+    recent_avg = pivot.mean(axis=0)
+    season_avg = (
+        data.pivot_table(index="Gamecode", columns="Player_ID", values="MIN",
+                         aggfunc="sum", fill_value=0)
+        .reindex(columns=roster["Player_ID"], fill_value=0)
+        .mean(axis=0)
+    )
+    result = roster.set_index("Player_ID")
+    result["Recent_MIN"] = recent_avg.reindex(result.index).fillna(0)
+    result["Season_MIN"] = season_avg.reindex(result.index).fillna(0)
+    result["Baseline_MIN"] = (
+        recent_weight * result["Recent_MIN"]
+        + (1 - recent_weight) * result["Season_MIN"]
+    )
+
+    unavailable = {str(player_id) for player_id in (unavailable_player_ids or set())}
+    result["Unavailable"] = result.index.isin(unavailable)
+    available = result.loc[~result["Unavailable"], "Baseline_MIN"]
+    allocation = _cap_and_scale_minutes(available, team_minutes, 40.0)
+    result["Projected_MIN"] = 0.0
+    result.loc[allocation.index, "Projected_MIN"] = allocation
+    result.index.name = "Player_ID"
+    return result.reset_index().sort_values("Projected_MIN", ascending=False).reset_index(drop=True)
