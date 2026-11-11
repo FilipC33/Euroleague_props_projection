@@ -39,8 +39,14 @@ CODE_ALIASES = {}
 # API column -> short name. If the API names differ, clean_box() tells you.
 RENAME = {"Points": "PTS", "TotalRebounds": "REB", "Assistances": "AST",
           "FieldGoalsMade3": "3PM", "Steals": "STL", "BlocksFavour": "BLK",
-          "Turnovers": "TO", "Minutes": "MIN"}
+          "Turnovers": "TO", "Minutes": "MIN",
+          "FieldGoalsAttemptedTotal": "FGA", "FieldGoalsMadeTotal": "FGM",
+          "FieldGoalsAttempted2": "2PA", "FieldGoalsMade2": "2PM",
+          "FieldGoalsAttempted3": "3PA", "FreeThrowsAttempted": "FTA",
+          "FreeThrowsMade": "FTM", "OffensiveRebounds": "OREB",
+          "DefensiveRebounds": "DREB"}
 BASE = ["PTS", "REB", "AST", "3PM", "STL", "BLK", "TO"]
+MODEL_STATS = ["FGA", "FGM", "2PA", "2PM", "3PA", "FTA", "FTM", "OREB", "DREB"]
 COMBOS = {"PRA": ["PTS", "REB", "AST"], "PR": ["PTS", "REB"],
           "PA": ["PTS", "AST"], "RA": ["REB", "AST"]}
 STAT_OPTIONS = ["PTS", "REB", "AST", "3PM", "STL", "BLK", "PRA", "PR", "PA", "RA"]
@@ -95,15 +101,19 @@ def clean_box(raw):
         raise ValueError(f"Box score columns missing {missing}. Actual columns: {list(df.columns)}")
     df = df.rename(columns=RENAME)
     df["MIN"] = df["MIN"].apply(to_minutes)
-    for c in BASE:
+    for c in BASE + MODEL_STATS:
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
     df["Player_ID"] = df["Player_ID"].astype(str).str.strip()
-    return df[["Gamecode", "Home", "Team", "Player_ID", "Player", "MIN"] + BASE]
+    return df[["Gamecode", "Home", "Team", "Player_ID", "Player", "MIN"] + BASE + MODEL_STATS]
 
 
 def update_box(latest):
     old = pd.read_parquet(BOX_PATH) if os.path.exists(BOX_PATH) else pd.DataFrame()
-    have = set(old["Gamecode"]) if len(old) else set()
+    # Older cache files do not contain the expanded model stats. Re-fetch those
+    # games once, then replace matching player-game rows while retaining any
+    # cached games that could not be downloaded during this update.
+    refresh_all = len(old) > 0 and not set(MODEL_STATS).issubset(old.columns)
+    have = set() if refresh_all else (set(old["Gamecode"]) if len(old) else set())
     todo = [g for g in range(1, latest + 1) if g not in have]
     if not todo:
         st.sidebar.success("Already up to date.")
@@ -122,7 +132,9 @@ def update_box(latest):
         bar.progress((i + 1) / len(todo))
         time.sleep(1.0)
     if new:
-        pd.concat(([old] if len(old) else []) + new, ignore_index=True).to_parquet(BOX_PATH)
+        combined = pd.concat(([old] if len(old) else []) + new, ignore_index=True)
+        combined = combined.drop_duplicates(["Gamecode", "Player_ID"], keep="last")
+        combined.to_parquet(BOX_PATH)
     if failed:
         st.sidebar.warning(f"No data for games: {failed}")
 
