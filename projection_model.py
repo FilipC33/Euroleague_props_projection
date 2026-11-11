@@ -563,3 +563,122 @@ def walk_forward_backtest(
         })
     metrics = pd.DataFrame(metric_rows)
     return predictions, metrics
+
+
+
+def zone_points_projection(
+    shots: pd.DataFrame,
+    player_id: str,
+    opponent_code: str | None,
+    projected_fga: float,
+    projected_ftm: float,
+    prior_attempts: float = 30.0,
+    defense_prior_games: float = 5.0,
+) -> dict:
+    """Project field-goal points from player zone mix and opponent zone defense.
+
+    Player zone shares and points-per-attempt are shrunk toward league rates.
+    Opponent zone volume and accuracy effects are also shrunk and capped, so a
+    small sample cannot create an extreme adjustment. Free throws are added
+    separately from the box-score FTM projection.
+    """
+    if projected_fga < 0 or projected_ftm < 0 or prior_attempts < 0:
+        raise ValueError("Attempts, free throws and prior must be non-negative")
+    _require_columns(
+        shots, ["ID_PLAYER", "TEAM", "Gamecode", "COORD_X", "COORD_Y", "Result", "POINTS"]
+    )
+    data = add_shot_zones(shots)
+    if data.empty:
+        return {
+            "Projected_FG_PTS": 0.0,
+            "Projected_FT_PTS": float(projected_ftm),
+            "Projected_PTS": float(projected_ftm),
+            "zones": pd.DataFrame(),
+        }
+
+    league = data.groupby("Zone").agg(
+        FGA=("Result", "size"), FGM=("FGM", "sum"), PTS=("POINTS", "sum")
+    ).reindex(ZONES).fillna(0)
+    league_total = float(league["FGA"].sum())
+    if league_total <= 0:
+        return {
+            "Projected_FG_PTS": 0.0,
+            "Projected_FT_PTS": float(projected_ftm),
+            "Projected_PTS": float(projected_ftm),
+            "zones": pd.DataFrame(),
+        }
+    league["Share"] = league["FGA"] / league_total
+    league["PPP"] = league["PTS"] / league["FGA"].where(league["FGA"] > 0)
+    league["Points_per_make"] = (
+        league["PTS"] / league["FGM"].where(league["FGM"] > 0)
+    )
+
+    player = data.loc[data["ID_PLAYER"].astype(str) == str(player_id)]
+    player_zone = player.groupby("Zone").agg(
+        FGA=("Result", "size"), FGM=("FGM", "sum"), PTS=("POINTS", "sum")
+    ).reindex(ZONES).fillna(0)
+    player_attempts = float(player_zone["FGA"].sum())
+
+    defense = opponent_zone_defense(shots)
+    if not defense.empty and opponent_code is not None:
+        defense = defense.loc[defense["DefTeam"].astype(str) == str(opponent_code)].set_index("Zone")
+    else:
+        defense = pd.DataFrame()
+
+    rows = []
+    for zone_name in ZONES:
+        lg = league.loc[zone_name]
+        pl = player_zone.loc[zone_name]
+        league_share = float(lg["Share"])
+        league_ppp = float(lg["PPP"]) if pd.notna(lg["PPP"]) else 0.0
+        zone_fga = float(pl["FGA"])
+        zone_pts = float(pl["PTS"])
+        shrunk_share = (
+            (zone_fga + prior_attempts * league_share)
+            / (player_attempts + prior_attempts)
+            if player_attempts + prior_attempts > 0 else league_share
+        )
+        shrunk_ppp = (
+            (zone_pts + prior_attempts * league_ppp) / (zone_fga + prior_attempts)
+            if zone_fga + prior_attempts > 0 else league_ppp
+        )
+        points_per_make = (
+            float(lg["Points_per_make"])
+            if pd.notna(lg["Points_per_make"]) else 2.0
+        )
+
+        volume_factor, efficiency_delta = 1.0, 0.0
+        if not defense.empty and zone_name in defense.index:
+            d = defense.loc[zone_name]
+            games = float(d["Games"])
+            reliability = games / (games + defense_prior_games) if games + defense_prior_games > 0 else 0
+            league_fga = float(d["League_FGA_per_game"])
+            if league_fga > 0:
+                volume_ratio = float(d["FGA_allowed_per_game"]) / league_fga
+                volume_factor = max(0.95, min(1.05, 1 + reliability * (volume_ratio - 1)))
+            if pd.notna(d["FG_pct_vs_league"]):
+                efficiency_delta = max(
+                    -0.05, min(0.05, reliability * float(d["FG_pct_vs_league"]))
+                )
+
+        adjusted_ppp = max(0.0, shrunk_ppp + efficiency_delta * points_per_make)
+        zone_fga_projection = projected_fga * shrunk_share * volume_factor
+        rows.append({
+            "Zone": zone_name,
+            "FGA_share": shrunk_share,
+            "PPP_shrunk": shrunk_ppp,
+            "Opponent_volume_factor": volume_factor,
+            "Opponent_efficiency_delta": efficiency_delta,
+            "Projected_FGA": zone_fga_projection,
+            "Projected_PTS": zone_fga_projection * adjusted_ppp,
+        })
+
+    zone_result = pd.DataFrame(rows)
+    fg_points = float(zone_result["Projected_PTS"].sum())
+    ft_points = float(projected_ftm)
+    return {
+        "Projected_FG_PTS": fg_points,
+        "Projected_FT_PTS": ft_points,
+        "Projected_PTS": fg_points + ft_points,
+        "zones": zone_result,
+    }
