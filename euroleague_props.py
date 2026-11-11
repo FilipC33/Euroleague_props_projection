@@ -24,6 +24,14 @@ import streamlit as st
 from euroleague_api.boxscore_data import BoxScoreData
 from euroleague_api.schedule import Schedule
 from matplotlib.patches import Arc, Circle, Rectangle
+from projection_model import (
+    expected_minutes_table,
+    game_environment,
+    player_rate_table,
+    project_player_box_score,
+    team_game_table,
+    zone_points_projection,
+)
 
 SEASON = 2026
 DATA_DIR = "data_cache"
@@ -451,6 +459,12 @@ if tm_mode != "Any":
     mates = roster[roster["Player_ID"] != pid]["Player"].tolist()
     tm_name = st.sidebar.selectbox("Teammate", mates)
 
+unavailable_names = st.sidebar.multiselect(
+    "Unavailable players (redistribute minutes)",
+    options=roster["Player"].tolist(),
+    help="Selected players receive zero projected minutes; their rotation share is redistributed.",
+)
+
 # apply filters (hit rates are computed on the filtered pool; L5/L10/L20 slice it)
 pool = mine.copy()
 if venue != "All":
@@ -475,7 +489,9 @@ opp_sel = sorted(opp_games)[-int(n_opt[1:]):] if n_opt != "All" else sorted(opp_
 opp_code = team_code(box, opp_view)
 dvp = defence_vs_position(box, pos_map, opp_view, opp_sel)
 
-tab1, tab2, tab3, tab4 = st.tabs(["Game log", "Shot maps", "Opponent defence", "Positions"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["Game log", "Shot maps", "Opponent defence", "Positions", "Projection"]
+)
 
 with tab1:
     st.subheader(f"{pname} — {stat} over {line:g}")
@@ -603,3 +619,71 @@ with tab4:
             st.rerun()
         except OSError:
             st.error("Couldn't write positions.csv (is it open in Excel?).")
+
+with tab5:
+    st.subheader(f"{pname} — 2026 projection vs {opp_view}")
+    try:
+        rates = player_rate_table(box)
+        historical_team_games = team_game_table(box)
+        unavailable_ids = set(
+            roster.loc[roster["Player"].isin(unavailable_names), "Player_ID"]
+            .astype(str)
+        )
+        minute_projection = expected_minutes_table(
+            box, team, unavailable_player_ids=unavailable_ids
+        )
+        environment = game_environment(historical_team_games, team, opp_view)
+        projected_roster = project_player_box_score(
+            rates,
+            minute_projection,
+            pace_factor=environment["pace_factor"],
+            scoring_factor=1.0,
+            stats=["PTS", "REB", "AST", "3PM", "STL", "BLK", "TO", "FGA", "FTA", "FTM"],
+        )
+        selected_projection = projected_roster[
+            projected_roster["Player_ID"].astype(str) == str(pid)
+        ]
+        if selected_projection.empty:
+            st.warning("Not enough 2026 playing data to project this player yet.")
+        else:
+            player_projection = selected_projection.iloc[0]
+            opponent_code = team_code(box, opp_view)
+            zone_projection = zone_points_projection(
+                shots,
+                str(pid),
+                opponent_code,
+                float(player_projection["Proj_FGA"]),
+                float(player_projection["Proj_FTM"]),
+            )
+            projected_points = zone_projection["Projected_PTS"] * environment["scoring_factor"]
+
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("Minutes", f"{player_projection['Projected_MIN']:.1f}")
+            m2.metric("Points", f"{projected_points:.1f}")
+            m3.metric("Rebounds", f"{player_projection['Proj_REB']:.1f}")
+            m4.metric("Assists", f"{player_projection['Proj_AST']:.1f}")
+            m5.metric("3-pointers", f"{player_projection['Proj_3PM']:.1f}")
+
+            st.caption(
+                f"Estimated pace: {environment['expected_pace']:.1f} possessions per 40 · "
+                f"pace adjustment: {environment['pace_factor']:.3f} · "
+                f"opponent DRtg: {environment['opponent_drtg']:.1f}. "
+                "Points combine projected shot volume, player zone efficiency, opponent zone defence "
+                "and free throws. Adjustments are deliberately conservative."
+            )
+            st.write("**Projected scoring by shot zone**")
+            st.dataframe(zone_projection["zones"].round(3), hide_index=True)
+
+            st.write("**Projected team rotation**")
+            st.dataframe(
+                minute_projection[
+                    ["Player", "Recent_MIN", "Season_MIN", "Baseline_MIN", "Projected_MIN", "Unavailable"]
+                ].round(1),
+                hide_index=True,
+            )
+    except (KeyError, ValueError) as exc:
+        st.warning(
+            "The expanded 2026 box-score cache is needed for projections. "
+            "Click **Fetch / update box scores** in the sidebar to rebuild it. "
+            f"Details: {exc}"
+        )
