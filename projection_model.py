@@ -366,12 +366,17 @@ def expected_minutes_table(
         index="Gamecode", columns="Player_ID", values="MIN", aggfunc="sum", fill_value=0
     ).reindex(index=games, columns=roster["Player_ID"], fill_value=0)
     recent_avg = pivot.mean(axis=0)
-    season_avg = (
-        data.pivot_table(index="Gamecode", columns="Player_ID", values="MIN",
-                         aggfunc="sum", fill_value=0)
-        .reindex(columns=roster["Player_ID"], fill_value=0)
-        .mean(axis=0)
-    )
+    season_pivot = data.pivot_table(
+        index="Gamecode", columns="Player_ID", values="MIN",
+        aggfunc="sum", fill_value=0,
+    ).reindex(columns=roster["Player_ID"], fill_value=0)
+    first_game = data.groupby("Player_ID")["Gamecode"].min()
+    season_avg = pd.Series({
+        player_id: season_pivot.loc[
+            season_pivot.index >= first_game[player_id], player_id
+        ].mean()
+        for player_id in roster["Player_ID"]
+    })
     result = roster.set_index("Player_ID")
     result["Recent_MIN"] = recent_avg.reindex(result.index).fillna(0)
     result["Season_MIN"] = season_avg.reindex(result.index).fillna(0)
