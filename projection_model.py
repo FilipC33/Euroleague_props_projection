@@ -498,11 +498,14 @@ def walk_forward_backtest(
 
     for gamecode in gamecodes:
         history = data.loc[data["Gamecode"] < gamecode].copy()
-        if history["Gamecode"].nunique() < min_train_games:
-            continue
         target = data.loc[data["Gamecode"] == gamecode].copy()
         teams = target["Team"].dropna().unique().tolist()
         if len(teams) != 2:
+            continue
+        if any(
+            history.loc[history["Team"] == team, "Gamecode"].nunique() < min_train_games
+            for team in teams
+        ):
             continue
 
         rates = player_rate_table(history)
