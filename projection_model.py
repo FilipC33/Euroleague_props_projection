@@ -669,15 +669,36 @@ def zone_points_projection(
             "PPP_shrunk": shrunk_ppp,
             "Opponent_volume_factor": volume_factor,
             "Opponent_efficiency_delta": efficiency_delta,
+            "FG_pct_shrunk": (
+                (float(pl["FGM"]) + prior_attempts * (
+                    float(lg["FGM"]) / float(lg["FGA"]) if float(lg["FGA"]) > 0 else 0.0
+                )) / (zone_fga + prior_attempts)
+                if zone_fga + prior_attempts > 0 else 0.0
+            ),
             "Projected_FGA": zone_fga_projection,
+            "Projected_FGM": zone_fga_projection * max(
+                0.0,
+                min(1.0, (
+                    (float(pl["FGM"]) + prior_attempts * (
+                        float(lg["FGM"]) / float(lg["FGA"]) if float(lg["FGA"]) > 0 else 0.0
+                    )) / (zone_fga + prior_attempts)
+                    if zone_fga + prior_attempts > 0 else 0.0
+                ) + efficiency_delta),
+            ),
             "Projected_PTS": zone_fga_projection * adjusted_ppp,
         })
 
     zone_result = pd.DataFrame(rows)
     fg_points = float(zone_result["Projected_PTS"].sum())
+    fg_makes = float(zone_result["Projected_FGM"].sum())
+    three_makes = float(zone_result.loc[
+        zone_result["Zone"].isin(["Corner 3", "Above-the-break 3"]), "Projected_FGM"
+    ].sum())
     ft_points = float(projected_ftm)
     return {
         "Projected_FG_PTS": fg_points,
+        "Projected_FGM": fg_makes,
+        "Projected_3PM": three_makes,
         "Projected_FT_PTS": ft_points,
         "Projected_PTS": fg_points + ft_points,
         "zones": zone_result,
