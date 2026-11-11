@@ -525,7 +525,8 @@ def walk_forward_backtest(
             actual = target.loc[target["Team"] == team, ["Player_ID"] + stats].copy()
             for stat in stats:
                 actual[stat] = pd.to_numeric(actual[stat], errors="coerce").fillna(0)
-            joined = projected.merge(actual, on="Player_ID", how="inner", suffixes=("", "_actual"))
+            actual = actual.rename(columns={stat: f"Actual_{stat}" for stat in stats})
+            joined = projected.merge(actual, on="Player_ID", how="inner")
             if joined.empty:
                 continue
             joined["Gamecode"] = gamecode
@@ -535,7 +536,6 @@ def walk_forward_backtest(
             joined["Pace_factor"] = environment["pace_factor"]
             joined["Scoring_factor"] = environment["scoring_factor"]
             for stat in stats:
-                joined[f"Actual_{stat}"] = joined[stat]
                 joined[f"Error_{stat}"] = joined[f"Proj_{stat}"] - joined[f"Actual_{stat}"]
             records.append(joined)
 
