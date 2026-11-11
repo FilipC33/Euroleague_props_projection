@@ -32,6 +32,7 @@ from projection_model import (
     position_defense_table,
     project_player_box_score,
     team_game_table,
+    walk_forward_backtest,
     zone_points_projection,
 )
 
@@ -700,6 +701,26 @@ with tab5:
                 ].round(1),
                 hide_index=True,
             )
+
+            st.divider()
+            st.write("**2026 walk-forward validation**")
+            st.caption(
+                "Each historical prediction is built only from earlier games. "
+                "This first benchmark checks the per-40 rate, minutes and pace baseline; "
+                "zone and position adjustments are used in the live projection above."
+            )
+            if st.button("Run walk-forward backtest", key="run_2026_backtest"):
+                with st.spinner("Rebuilding historical projections game by game..."):
+                    backtest_rows, backtest_metrics = walk_forward_backtest(box)
+                if backtest_metrics.empty:
+                    st.info("Not enough completed 2026 games to run the backtest yet.")
+                else:
+                    st.dataframe(backtest_metrics.round(3), hide_index=True)
+                    st.caption(
+                        f"{len(backtest_rows):,} player-game predictions. "
+                        "MAE = average absolute error; RMSE penalizes larger misses; "
+                        "Bias above zero means the model overpredicts."
+                    )
     except (KeyError, ValueError) as exc:
         st.warning(
             "The expanded 2026 box-score cache is needed for projections. "
