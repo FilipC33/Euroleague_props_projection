@@ -547,6 +547,8 @@ with tab1:
                  .iloc[::-1], hide_index=True)
 
 real = shots[shots["COORD_X"] != -1]  # drops free throws (no coordinates)
+# Reuse the app's existing zone definitions for every projection feature.
+zoned_shots = zone(real)
 
 with tab2:
     ps = real[(real["ID_PLAYER"] == pid) & (real["Gamecode"].isin(sel["Gamecode"]))]
@@ -652,7 +654,7 @@ with tab5:
             player_projection = selected_projection.iloc[0]
             opponent_code = team_code(box, opp_view)
             zone_projection = zone_points_projection(
-                shots,
+                zoned_shots,
                 str(pid),
                 opponent_code,
                 float(player_projection["Proj_FGA"]),
