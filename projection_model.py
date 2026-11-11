@@ -465,3 +465,93 @@ def project_player_box_score(
             projection = projection * scoring_factor
         result[f"Proj_{stat}"] = projection
     return result
+
+
+
+def walk_forward_backtest(
+    box: pd.DataFrame,
+    min_train_games: int = 3,
+    recent_games: int = 5,
+    stats: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Backtest projections chronologically without using future game data.
+
+    For each target game, every feature is rebuilt from games with a lower
+    Gamecode. This is slower than a random split, but avoids look-ahead leakage.
+    Returns (player-game predictions, summary metrics).
+    """
+    stats = stats or ["PTS", "REB", "AST", "3PM"]
+    _require_columns(
+        box,
+        ["Gamecode", "Team", "Player_ID", "Player", "MIN"] + stats
+        + ["FGA", "OREB", "TO", "FTA"],
+    )
+    data = box.copy()
+    data["Player_ID"] = data["Player_ID"].astype(str)
+    gamecodes = sorted(data["Gamecode"].dropna().unique())
+    records = []
+
+    for gamecode in gamecodes:
+        history = data.loc[data["Gamecode"] < gamecode].copy()
+        if history["Gamecode"].nunique() < min_train_games:
+            continue
+        target = data.loc[data["Gamecode"] == gamecode].copy()
+        teams = target["Team"].dropna().unique().tolist()
+        if len(teams) != 2:
+            continue
+
+        rates = player_rate_table(history)
+        historical_team_games = team_game_table(history)
+        if rates.empty or historical_team_games.empty:
+            continue
+
+        for team in teams:
+            opponent = teams[1] if teams[0] == team else teams[0]
+            minutes = expected_minutes_table(
+                history, team, recent_games=recent_games
+            )
+            if minutes.empty:
+                continue
+            environment = game_environment(
+                historical_team_games, team, opponent, recent_games=recent_games
+            )
+            projected = project_player_box_score(
+                rates,
+                minutes,
+                pace_factor=environment["pace_factor"],
+                scoring_factor=environment["scoring_factor"],
+                stats=stats,
+            )
+            actual = target.loc[target["Team"] == team, ["Player_ID"] + stats].copy()
+            for stat in stats:
+                actual[stat] = pd.to_numeric(actual[stat], errors="coerce").fillna(0)
+            joined = projected.merge(actual, on="Player_ID", how="inner", suffixes=("", "_actual"))
+            if joined.empty:
+                continue
+            joined["Gamecode"] = gamecode
+            joined["Team"] = team
+            joined["Opponent"] = opponent
+            joined["Expected_pace"] = environment["expected_pace"]
+            joined["Pace_factor"] = environment["pace_factor"]
+            joined["Scoring_factor"] = environment["scoring_factor"]
+            for stat in stats:
+                joined[f"Actual_{stat}"] = joined[stat]
+                joined[f"Error_{stat}"] = joined[f"Proj_{stat}"] - joined[f"Actual_{stat}"]
+            records.append(joined)
+
+    if not records:
+        empty = pd.DataFrame()
+        return empty, empty
+    predictions = pd.concat(records, ignore_index=True)
+    metric_rows = []
+    for stat in stats:
+        errors = predictions[f"Error_{stat}"]
+        metric_rows.append({
+            "Stat": stat,
+            "N": int(errors.notna().sum()),
+            "MAE": float(errors.abs().mean()),
+            "RMSE": float((errors.pow(2).mean()) ** 0.5),
+            "Bias": float(errors.mean()),
+        })
+    metrics = pd.DataFrame(metric_rows)
+    return predictions, metrics
