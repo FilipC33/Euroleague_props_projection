@@ -535,10 +535,13 @@ def walk_forward_backtest(
                 scoring_factor=environment["scoring_factor"],
                 stats=stats,
             )
-            actual = target.loc[target["Team"] == team, ["Player_ID"] + stats].copy()
+            actual = target.loc[target["Team"] == team, ["Player_ID", "MIN"] + stats].copy()
+            actual["MIN"] = pd.to_numeric(actual["MIN"], errors="coerce").fillna(0)
             for stat in stats:
                 actual[stat] = pd.to_numeric(actual[stat], errors="coerce").fillna(0)
-            actual = actual.rename(columns={stat: f"Actual_{stat}" for stat in stats})
+            actual = actual.rename(
+                columns={"MIN": "Actual_MIN", **{stat: f"Actual_{stat}" for stat in stats}}
+            )
             joined = projected.merge(actual, on="Player_ID", how="inner")
             if joined.empty:
                 continue
@@ -548,6 +551,7 @@ def walk_forward_backtest(
             joined["Expected_pace"] = environment["expected_pace"]
             joined["Pace_factor"] = environment["pace_factor"]
             joined["Scoring_factor"] = environment["scoring_factor"]
+            joined["Error_MIN"] = joined["Projected_MIN"] - joined["Actual_MIN"]
             for stat in stats:
                 joined[f"Error_{stat}"] = joined[f"Proj_{stat}"] - joined[f"Actual_{stat}"]
             records.append(joined)
@@ -557,7 +561,7 @@ def walk_forward_backtest(
         return empty, empty
     predictions = pd.concat(records, ignore_index=True)
     metric_rows = []
-    for stat in stats:
+    for stat in ["MIN"] + stats:
         errors = predictions[f"Error_{stat}"]
         metric_rows.append({
             "Stat": stat,
