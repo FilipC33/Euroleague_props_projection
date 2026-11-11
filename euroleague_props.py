@@ -28,6 +28,8 @@ from projection_model import (
     expected_minutes_table,
     game_environment,
     player_rate_table,
+    position_adjustment_factors,
+    position_defense_table,
     project_player_box_score,
     team_game_table,
     zone_points_projection,
@@ -655,21 +657,38 @@ with tab5:
                 float(player_projection["Proj_FGA"]),
                 float(player_projection["Proj_FTM"]),
             )
-            projected_points = zone_projection["Projected_PTS"] * environment["scoring_factor"]
+            position_defense = position_defense_table(box, pos_map)
+            player_position = pos_map.get(str(pid), "Wing")
+            matchup_factors = position_adjustment_factors(
+                position_defense,
+                opp_view,
+                player_position,
+                stats=["PTS", "REB", "AST"],
+                max_adjustment=0.03,
+            )
+            projected_points = (
+                zone_projection["Projected_PTS"]
+                * environment["scoring_factor"]
+                * matchup_factors["PTS"]
+            )
+            projected_rebounds = player_projection["Proj_REB"] * matchup_factors["REB"]
+            projected_assists = player_projection["Proj_AST"] * matchup_factors["AST"]
 
             m1, m2, m3, m4, m5 = st.columns(5)
             m1.metric("Minutes", f"{player_projection['Projected_MIN']:.1f}")
             m2.metric("Points", f"{projected_points:.1f}")
-            m3.metric("Rebounds", f"{player_projection['Proj_REB']:.1f}")
-            m4.metric("Assists", f"{player_projection['Proj_AST']:.1f}")
+            m3.metric("Rebounds", f"{projected_rebounds:.1f}")
+            m4.metric("Assists", f"{projected_assists:.1f}")
             m5.metric("3-pointers", f"{player_projection['Proj_3PM']:.1f}")
 
             st.caption(
                 f"Estimated pace: {environment['expected_pace']:.1f} possessions per 40 · "
                 f"pace adjustment: {environment['pace_factor']:.3f} · "
-                f"opponent DRtg: {environment['opponent_drtg']:.1f}. "
-                "Points combine projected shot volume, player zone efficiency, opponent zone defence "
-                "and free throws. Adjustments are deliberately conservative."
+                f"opponent DRtg: {environment['opponent_drtg']:.1f} · "
+                f"{player_position} matchup factors — PTS {matchup_factors['PTS']:.3f}, "
+                f"REB {matchup_factors['REB']:.3f}, AST {matchup_factors['AST']:.3f}. "
+                "Points combine projected shot volume, player zone efficiency, opponent zone defence, "
+                "position matchup and free throws. Adjustments are deliberately conservative."
             )
             st.write("**Projected scoring by shot zone**")
             st.dataframe(zone_projection["zones"].round(3), hide_index=True)
